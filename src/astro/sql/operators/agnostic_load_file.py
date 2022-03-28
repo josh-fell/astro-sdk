@@ -1,6 +1,5 @@
-import glob
+import os
 from typing import Union
-from urllib.parse import urlparse, urlunparse
 
 from airflow.hooks.base import BaseHook
 from airflow.models import BaseOperator
@@ -8,10 +7,23 @@ from airflow.models import BaseOperator
 from astro.constants import DEFAULT_CHUNK_SIZE
 from astro.sql.table import Table, TempTable, create_table_name
 from astro.utils import get_hook
-from astro.utils.dependencies import gcs, s3
-from astro.utils.file import get_filetype
-from astro.utils.load import load_dataframe_into_sql_table, load_file_into_dataframe
-from astro.utils.path import get_paths, get_transport_params, validate_path
+
+from astro.utils.file import get_filetype, get_size, is_binary, is_small
+from astro.utils.load import (
+    copy_remote_file_to_local,
+    load_dataframe_into_sql_table,
+    load_file_into_dataframe,
+    load_file_into_sql_table,
+    load_file_rows_into_dataframe,
+)
+from astro.utils.path import (
+    get_location,
+    get_paths,
+    get_transport_params,
+    is_local,
+    validate_path,
+)
+
 from astro.utils.task_id_helper import get_task_id
 
 
@@ -67,7 +79,11 @@ class AgnosticLoadFile(BaseOperator):
         )
         paths = get_paths(self.path, self.file_conn_id)
         transport_params = get_transport_params(paths[0], self.file_conn_id)
-        return self.load_using_pandas(context, paths, hook, transport_params)
+
+        if self.output_table.database == "postgres":
+            return self.load_to_postgres(context, paths, hook, transport_params)
+        else:
+            return self.load_using_pandas(context, paths, hook, transport_params)
 
     def load_using_pandas(self, context, paths, hook, transport_params):
         """Loads csv/parquet table from local/S3/GCS with Pandas.
@@ -90,12 +106,73 @@ class AgnosticLoadFile(BaseOperator):
         self.log.info(f"Completed loading the data into {self.output_table}.")
         return self.output_table
 
+    def load_to_postgres(self, context, paths, hook, transport_params):
+        """
+        Loads a sequence of files into Postgres.
+        Based on the size of the first file, either use `load_using_pandas` or use the Postgres native COPY statement.
+        The implementation assumes that, if we have multiple files, that they all are similar in size to the first
+        one. We may want to review this approach in the future.
+        """
+        # Steps used to load to Postgres:
+        # 1. Download file(s), if not local
+        # 2. Check size
+        #    * small: use Pandas dataframe (takes less than 2s), job completed!
+        #    * not small: continue to step (3) & following ones
+        # 3. If the table does not exist, create it automagically identifying the column types by:
+        #     i) loading a subset of rows into a Pandas dataframe (this varies depending on the original file type)
+        #     ii) creating a SQL table in the target DB using the Pandas dataframe created in 3.i
+        #     iii) emptying the table, so we can use the COPY command consistently to upload all the files
+        # 4. Convert the original file to .csv with "," separators
+        # 5. Use the COPY command to move the data into Postgres
+        # 6. Delete the local file
+        # 7. Repeat steps (1), (4), (5) and (6) until all files were copied to Postgres
+
+        first_filepath = paths[0]
+        file_type = get_filetype(first_filepath)
+
+        credentials = transport_params
+
+        # Identify if the files are remote. If they are, make a local copy of the first one.
+        remote_source = False
+        if not is_local(first_filepath):
+            remote_source = True
+            is_bin = is_binary(file_type)
+            local_filepath = copy_remote_file_to_local(
+                first_filepath, is_binary=is_bin, transport_params=credentials
+            )
+
+        # Performance tests (inside tests/benchmark) have shown that we can load small files efficiently using pandas
+        # across all the supported databases. Therefore, if the files are small, we default to this strategy.
+        if is_small(local_filepath):
+            return self.load_using_pandas(context, paths, hook, credentials)
+        else:
+            engine = self.get_sql_alchemy_engine()
+            if not sqlalchemy.inspect(engine).has_table(
+                self.output_table.table_name, schema=self.output_table.schema
+            ):
+                self._create_an_empty_table_using_pandas(
+                    local_filepath, file_type, hook
+                )
+            for path in paths:
+                if remote_source and path != local_filepath:
+                    local_filepath = copy_remote_file_to_local(
+                        path, is_binary=is_bin, transport_params=credentials
+                    )
+                load_file_into_sql_table(
+                    local_filepath, file_type, self.output_table.table_name, engine
+                )
+                if remote_source:
+                    os.remove(local_filepath)
+            return self.output_table
+
     def _configure_output_table(self, context):
         # TODO: Move this function to the SQLDecorator, so it can be reused across operators
         if isinstance(self.output_table, TempTable):
             self.output_table = self.output_table.to_table(
                 create_table_name(context=context)
             )
+        else:  # ?
+            self.output_table.schema = self.output_table.schema or SCHEMA
         if not self.output_table.table_name:
             self.output_table.table_name = create_table_name(context=context)
 
@@ -107,38 +184,6 @@ class AgnosticLoadFile(BaseOperator):
         validate_path(filepath)
         filetype = get_filetype(filepath)
         return load_file_into_dataframe(filepath, filetype, transport_params)
-
-    def get_paths(self, path, file_conn_id):
-        url = urlparse(path)
-        file_location = url.scheme
-        return {
-            "s3": self.get_paths_from_s3_or_gcs,
-            "gs": self.get_paths_from_s3_or_gcs,
-            "http": lambda url, file_conn_id: [urlunparse(list(url))],
-            "https": lambda url, file_conn_id: [urlunparse(list(url))],
-            "": self.get_paths_from_filesystem,
-        }[file_location](url, file_conn_id)
-
-    def get_prefix_list(self, scheme, conn_id, bucket_name, prefix):
-        if scheme == "s3":
-            hook = s3.S3Hook(aws_conn_id=conn_id) if conn_id else s3.S3Hook()
-            return hook.list_keys(bucket_name=bucket_name, prefix=prefix)
-        elif scheme == "gs":
-            hook = gcs.GCSHook(gcp_conn_id=conn_id) if conn_id else gcs.GCSHook()
-            return hook.list(bucket_name=bucket_name, prefix=prefix)
-
-    def get_paths_from_s3_or_gcs(self, url, file_conn_id=None):
-        bucket = url.netloc
-        prefix = url.path
-        list_keys = self.get_prefix_list(
-            url.scheme, file_conn_id, bucket_name=bucket, prefix=prefix[1:]
-        )
-        return [
-            urlunparse((url.scheme, url.netloc, keys, "", "", "")) for keys in list_keys
-        ]
-
-    def get_paths_from_filesystem(self, url, file_conn_id):
-        return glob.glob(url.path)
 
 
 def load_file(
