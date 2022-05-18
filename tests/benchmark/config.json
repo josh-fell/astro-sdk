@@ -11,16 +11,10 @@
   ],
   "datasets": [
     {
-        "name": "few_kb",
-        "size": "45K",
-        "path":"/tmp/covid_overview.csv",
-        "rows": 732
-    },
-    {
-        "name": "many_kb",
-        "size": "472K",
-        "path": "/tmp/artist_data.csv",
-        "rows": 3532
+        "name": "many_mb",
+        "size": "279M",
+        "path": "/tmp/temp.csv",
+        "rows": 385799
     }
   ]
 }

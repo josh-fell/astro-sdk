@@ -36,7 +36,7 @@ def count_columns(input_table: Table):
 def create_dag(database_name, table_args, dataset):
     dataset_name = dataset["name"]
     dataset_path = dataset["path"]
-    dataset_rows = dataset["rows"]
+    dataset_rows_count = dataset["rows"]
 
     dag_name = f"load_file_{dataset_name}_into_{database_name}"
     table_name = Path(dataset_path).stem
@@ -44,17 +44,12 @@ def create_dag(database_name, table_args, dataset):
     with DAG(dag_name, schedule_interval=None, start_date=START_DATE) as dag:
         table_metadata = Table(table_name=table_name, **table_args)
         table_xcom = aql.load_file(  # noqa: F841
-            path=dataset_path,
-            task_id="load_csv",
-            output_table=table_metadata,
-            chunksize=chunk_size,
-        )
-        table_xcom = aql.load_file(
             path=dataset_path, task_id="load_csv", output_table=table_metadata
         )
-
         aggregate_check = aql.aggregate_check(
-            table_xcom, check="SELECT COUNT(*) FROM {table}", equal_to=dataset_rows
+            table_xcom,
+            check="SELECT COUNT(*) FROM {{table}}",
+            equal_to=dataset_rows_count,
         )
         table_xcom.set_downstream(aggregate_check)
         return dag

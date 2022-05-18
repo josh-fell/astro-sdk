@@ -22,7 +22,7 @@ from astro.constants import (
 from astro.sql.table import Table
 from astro.utils.database import get_database_name, get_sqlalchemy_engine
 from astro.utils.dependencies import pandas_tools
-from astro.utils.file import get_filetype, get_size
+from astro.utils.file import does_csv_use_comma_separator, get_filetype, get_size
 from astro.utils.schema_util import create_schema_query, schema_exists
 
 
@@ -118,27 +118,49 @@ def load_file_into_sql_table(
     database_name = get_database_name(engine)
     if database_name not in [Database.POSTGRES, Database.POSTGRESQL]:
         raise ValueError(f"Function not available for {database_name.value}")
-    csv_sep = ","
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        csv_filepath = tmp_file.name
-        # At the moment we are using dataframes to convert among filetypes
-        # since, among the file formats we support, Postgres only accepts CSV
-        # TODO: chunk the files so we don't need to load huge files in memory
-        df = load_file_into_dataframe(filepath, filetype)
-        df.to_csv(csv_filepath, index=None, header=False)
-        tmp_file.flush()
+    # csv_sep = ","
+    csv_filepath = filepath
+    if filetype != FileType.CSV or (
+        filetype == FileType.CSV and not does_csv_use_comma_separator(filepath)
+    ):
+        # create a CSV using comma as the separator
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            csv_filepath = tmp_file.name
+            # At the moment we are using dataframes to convert among filetypes
+            # since, among the file formats we support, Postgres only accepts CSV
+            # TODO: chunk the files so we don't need to load huge files in memory
+            df = load_file_into_dataframe(filepath, filetype)
+            df.to_csv(csv_filepath, index=None, header=False)
 
-        tmp_file.seek(0)
+    with open(csv_filepath) as fp:
+        # if csv_filepath == filepath:
+        #    # skip header
+        #    header = fp.readline()
+        #    # import pdb; pdb.set_trace()
+
+        # TODO:
+        # check pandas code again to confirm how they are doing -> so we can use the same approach
+        # (1) try to use copy_expert: explicitly passing column names
+        # (2) try with FORCE_QUOTE on columns which text
+        # (3) convert tabs as opposed to commas as separators
+
         psycopg_conn = engine.raw_connection()
-        # The COPY statement only works if we run it from within the server,
-        # unless we use psql '\copy' or psycopg `cursor.copy_from`
         with psycopg_conn.cursor() as cursor:
+            # The COPY statement only works if we run it from within the server,
+            # unless we use psql '\copy' or psycopg `cursor.copy_from`
+            # We are intentionally not declaring the separator, otherwise if a column value has comma, the command fails
+            """
             cursor.copy_from(
-                file=tmp_file,
+                file=fp,
                 table=table_name,
-                sep=csv_sep,
                 size=get_size(csv_filepath),
+                sep=',',
+                null=''
             )
+            """
+            sql_statement = f"COPY {table_name} FROM stdin WITH CSV HEADER DELIMITER as ',' NULL as 'NULL' QUOTE as '\"';"  # noqa: E501
+            # sql_statement = f"COPY {table_name} FROM '{filepath}' DELIMITER ',' NULL '' WITH CSV HEADER QUOTE;"
+            cursor.copy_expert(sql_statement, fp, size=get_size(csv_filepath))
             psycopg_conn.commit()
 
 

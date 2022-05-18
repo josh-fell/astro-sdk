@@ -1,14 +1,17 @@
 import os
 from typing import Union
 
+import sqlalchemy
 from airflow.hooks.base import BaseHook
 from airflow.models import BaseOperator
 
 from astro.constants import DEFAULT_CHUNK_SIZE
+from astro.settings import SCHEMA
 from astro.sql.table import Table, TempTable, create_table_name
 from astro.utils import get_hook
-
-from astro.utils.file import get_filetype, get_size, is_binary, is_small
+from astro.utils.database import get_sqlalchemy_engine
+from astro.utils.delete import delete_dataframe_rows_from_table
+from astro.utils.file import get_filetype, is_binary, is_small
 from astro.utils.load import (
     copy_remote_file_to_local,
     load_dataframe_into_sql_table,
@@ -16,14 +19,7 @@ from astro.utils.load import (
     load_file_into_sql_table,
     load_file_rows_into_dataframe,
 )
-from astro.utils.path import (
-    get_location,
-    get_paths,
-    get_transport_params,
-    is_local,
-    validate_path,
-)
-
+from astro.utils.path import get_paths, get_transport_params, is_local, validate_path
 from astro.utils.task_id_helper import get_task_id
 
 
@@ -140,16 +136,19 @@ class AgnosticLoadFile(BaseOperator):
             local_filepath = copy_remote_file_to_local(
                 first_filepath, is_binary=is_bin, transport_params=credentials
             )
+        else:
+            local_filepath = first_filepath
 
         # Performance tests (inside tests/benchmark) have shown that we can load small files efficiently using pandas
         # across all the supported databases. Therefore, if the files are small, we default to this strategy.
         if is_small(local_filepath):
             return self.load_using_pandas(context, paths, hook, credentials)
         else:
-            engine = self.get_sql_alchemy_engine()
-            if not sqlalchemy.inspect(engine).has_table(
-                self.output_table.table_name, schema=self.output_table.schema
-            ):
+            engine = get_sqlalchemy_engine(hook)
+            existing_tables = sqlalchemy.inspect(engine).get_table_names(
+                schema=self.output_table.schema
+            )
+            if self.output_table.table_name not in existing_tables:
                 self._create_an_empty_table_using_pandas(
                     local_filepath, file_type, hook
                 )
@@ -158,12 +157,29 @@ class AgnosticLoadFile(BaseOperator):
                     local_filepath = copy_remote_file_to_local(
                         path, is_binary=is_bin, transport_params=credentials
                     )
+                # import pdb; pdb.set_trace()
                 load_file_into_sql_table(
                     local_filepath, file_type, self.output_table.table_name, engine
                 )
                 if remote_source:
                     os.remove(local_filepath)
             return self.output_table
+
+    def _create_an_empty_table_using_pandas(self, filepath, filetype, hook):
+        """
+        Create an empty SQL table. Uses Pandas to identify the types of the columns.
+        In order to identify the column type, load the first rows of content, based on the value of
+        `astro.constants.LOAD_COLUMN_AUTO_DETECT_ROWS`, and delete them after.
+        """
+        pandas_dataframe = load_file_rows_into_dataframe(filepath, filetype)
+        load_dataframe_into_sql_table(
+            pandas_dataframe,
+            self.output_table,
+            hook,
+            self.chunksize,
+            self.if_exists,
+        )
+        delete_dataframe_rows_from_table(pandas_dataframe, self.output_table, hook)
 
     def _configure_output_table(self, context):
         # TODO: Move this function to the SQLDecorator, so it can be reused across operators

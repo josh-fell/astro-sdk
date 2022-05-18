@@ -1,3 +1,4 @@
+import csv
 import os
 import pathlib
 from typing import Union
@@ -16,6 +17,20 @@ def get_size(filepath: str) -> int:
     """
     path = pathlib.Path(filepath)
     return os.path.getsize(path)
+
+
+def does_csv_use_comma_separator(filepath: Union[str, pathlib.Path]) -> bool:
+    """
+    Checks if the CSV uses comma as a separator
+
+    :param filepath: CSV file system path
+    :type filepath: Union[str, pathlib.Path]
+    :return: if the file uses commas (",") as a separator
+    :rtype: bol
+    """
+    with open(filepath) as csvfile:
+        dialect = csv.Sniffer().sniff(csvfile.read())
+        return dialect.delimiter == ","
 
 
 def get_filetype(filepath: Union[str, pathlib.PosixPath]) -> FileType:
