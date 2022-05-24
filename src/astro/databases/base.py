@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 import sqlalchemy
 from airflow.hooks.base import BaseHook
+from airflow.models import Connection
 
 from astro.constants import (
     DEFAULT_CHUNK_SIZE,
@@ -43,8 +44,14 @@ class BaseDatabase(ABC):
     illegal_column_name_chars: List[str] = []
     illegal_column_name_chars_replacement: List[str] = []
 
+    temp_table_schema: Optional[str] = None
+
     def __init__(self, conn_id: str):
         self.conn_id = conn_id
+
+        connection = Connection(conn_id)
+        if connection and connection.extra:
+            self.tmp_schema = connection.extra.get("tmp_schema")
 
     @property
     def hook(self) -> BaseHook:
@@ -132,6 +139,10 @@ class BaseDatabase(ABC):
         """
         if table.metadata and table.metadata.is_empty() and self.default_metadata:
             table.metadata = self.default_metadata
+
+        if table.temp and self.temp_table_schema:
+            table.metadata.schema = self.temp_table_schema
+
         if not table.metadata.schema:
             table.metadata.schema = SCHEMA
         return table

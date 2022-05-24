@@ -7,7 +7,6 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 from astro.constants import DEFAULT_CHUNK_SIZE, LoadExistStrategy
 from astro.databases.base import BaseDatabase
-from astro.settings import SCHEMA
 from astro.sql.table import Metadata, Table
 
 DEFAULT_CONN_ID = PostgresHook.default_conn_name
@@ -34,7 +33,7 @@ class PostgresDatabase(BaseDatabase):
     def default_metadata(self) -> Metadata:
         """Fill in default metadata values for table objects addressing postgres databases"""
         database = self.hook.get_connection(self.conn_id).schema
-        return Metadata(database=database, schema=SCHEMA)
+        return Metadata(database=database)
 
     def schema_exists(self, schema) -> bool:
         """

@@ -319,3 +319,10 @@ def test_create_table_from_select_statement(database_table_fixture):
     expected = pd.DataFrame([{"id": 1, "name": "First"}])
     test_utils.assert_dataframes_are_equal(df, expected)
     database.drop_table(target_table)
+
+
+def test_populate_table_metadata_with_temp_schema():
+    temp_table = Table(conn_id="postgres_conn_with_extra")
+    database = PostgresDatabase("postgres_conn_with_extra")
+    database.populate_table_metadata(temp_table)
+    assert temp_table.metadata.schema == "conn_temp_schema"

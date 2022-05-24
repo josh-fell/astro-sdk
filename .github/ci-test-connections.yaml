@@ -7,6 +7,15 @@ connections:
     password: postgres
     port: 5432
     extra:
+  - conn_id: postgres_conn_with_extra
+    conn_type: postgres
+    host: localhost
+    schema:
+    login: postgres
+    password: postgres
+    port: 5432
+    extra:
+      tmp_schema: "conn_temp_schema"
   - conn_id: postgres_conn_pagila
     conn_type: postgres
     host: localhost
