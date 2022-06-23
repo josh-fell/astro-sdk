@@ -78,7 +78,9 @@ class LoadFile(BaseOperator):
         )
         if_exists = self.if_exists
         for file in get_files(
-            input_file.path, input_file.conn_id, normalize_config=self.normalize_config
+            input_file.path,
+            input_file.conn_id,
+            normalize_config=self.normalize_config,
         ):
             if not database.check_optimised_path_and_transfer(
                 source_file=file,
@@ -102,7 +104,10 @@ class LoadFile(BaseOperator):
         SQL table was specified
         """
         df = None
-        for file in get_files(input_file.path, input_file.conn_id):
+        for file in get_files(
+            input_file.path,
+            input_file.conn_id,
+        ):
             if isinstance(df, pd.DataFrame):
                 df = pd.concat([df, file.export_to_dataframe()])
             else:
@@ -162,6 +167,7 @@ def load_file(
     **kwargs: Any,
 ) -> XComArg:
     """Load a file or bucket into either a SQL table or a pandas dataframe.
+
     :param input_file: File path and conn_id for object stores
     :param output_table: Table to create
     :param task_id: task id, optional
