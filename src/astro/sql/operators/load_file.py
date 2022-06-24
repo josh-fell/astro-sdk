@@ -18,7 +18,7 @@ class LoadFile(BaseOperator):
     :param output_table: Table to create
     :param ndjson_normalize_sep: separator used to normalize nested ndjson.
     :param chunk_size: Specify the number of records in each batch to be written at a time.
-    :param if_exists: Overwrite file if exists. Default False.
+    :param if_exists: Overwrite table if exists. Default 'replace'.
 
     :return: If ``output_table`` is passed this operator returns a Table object. If not
         passed, returns a dataframe.
@@ -85,6 +85,9 @@ class LoadFile(BaseOperator):
             if not database.check_optimised_path_and_transfer(
                 source_file=file,
                 target_table=self.output_table,
+                chunk_size=self.chunk_size,
+                if_exists=self.if_exists,
+                **self.kwargs,
             ):
                 return self.output_table
             else:
